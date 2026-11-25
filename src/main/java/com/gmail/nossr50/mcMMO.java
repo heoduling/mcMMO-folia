@@ -32,6 +32,7 @@ import com.gmail.nossr50.listeners.InventoryListener;
 import com.gmail.nossr50.listeners.PlayerListener;
 import com.gmail.nossr50.listeners.SelfListener;
 import com.gmail.nossr50.listeners.WorldListener;
+import com.gmail.nossr50.listeners.WorldGuardLifecycleListener;
 import com.gmail.nossr50.party.PartyManager;
 import com.gmail.nossr50.placeholders.PapiExpansion;
 import com.gmail.nossr50.runnables.SaveTimerTask;
@@ -64,6 +65,7 @@ import com.gmail.nossr50.util.TransientEntityTracker;
 import com.gmail.nossr50.util.TransientMetadataTools;
 import com.gmail.nossr50.util.blockmeta.ChunkManager;
 import com.gmail.nossr50.util.blockmeta.ChunkManagerFactory;
+import com.gmail.nossr50.util.blockmeta.PendingBlockChanges;
 import com.gmail.nossr50.util.blockmeta.McMMORegionBackupStore;
 import com.gmail.nossr50.util.blockmeta.UserBlockTracker;
 import com.gmail.nossr50.util.commands.CommandRegistrationManager;
@@ -71,11 +73,15 @@ import com.gmail.nossr50.util.experience.FormulaManager;
 import com.gmail.nossr50.util.platform.MinecraftGameVersion;
 import com.gmail.nossr50.util.player.PlayerLevelUtils;
 import com.gmail.nossr50.util.player.UserManager;
+import com.gmail.nossr50.util.player.PendingExperienceManager;
 import com.gmail.nossr50.util.scoreboards.ScoreboardManager;
 import com.gmail.nossr50.util.skills.RankUtils;
 import com.gmail.nossr50.util.skills.SkillTools;
 import com.gmail.nossr50.util.upgrade.UpgradeManager;
 import com.gmail.nossr50.worldguard.WorldGuardManager;
+import com.gmail.nossr50.worldguard.WorldGuardUtils;
+import com.gmail.nossr50.skills.acrobatics.DodgeXpTracker;
+import com.gmail.nossr50.skills.archery.TrackedEntity;
 import com.tcoded.folialib.FoliaLib;
 import java.io.File;
 import java.io.InputStream;
@@ -101,6 +107,12 @@ import org.jetbrains.annotations.Nullable;
 public class mcMMO extends JavaPlugin {
     /* Managers & Services */
     private static ChunkManager chunkManager;
+    private final ChunkListener chunkListener = new ChunkListener();
+    private final PendingBlockChanges pendingBlockChanges = new PendingBlockChanges();
+
+    public PendingBlockChanges getPendingBlockChanges() {
+        return pendingBlockChanges;
+    }
     private static RepairableManager repairableManager;
     private static SalvageableManager salvageableManager;
     private static DatabaseManager databaseManager;
@@ -166,6 +178,7 @@ public class mcMMO extends JavaPlugin {
     private EnchantmentMapper enchantmentMapper;
 
     private FoliaLib foliaLib;
+    private PendingExperienceManager pendingExperienceManager;
     private PartyManager partyManager;
 
     private CommandOnLevelUpConfig commandOnLevelUpConfig;
@@ -270,6 +283,7 @@ public class mcMMO extends JavaPlugin {
             databaseManager = DatabaseManagerFactory.getDatabaseManager(
                     mcMMO.getUsersFilePath(), getLogger(),
                     purgeTime, mcMMO.p.getAdvancedConfig().getStartingLevel());
+            pendingExperienceManager = new PendingExperienceManager(getDataFolder().toPath(), getLogger());
 
             //Check for the newer API and tell them what to do if its missing
             checkForOutdatedAPI();
@@ -295,6 +309,9 @@ public class mcMMO extends JavaPlugin {
                     ScoreboardManager.init();
                 }
 
+                TrackedEntity.startTracking();
+                DodgeXpTracker.startTracking();
+                WorldGuardUtils.refreshHook();
                 registerEvents();
                 registerCoreSkills();
                 registerCustomRecipes();
@@ -399,6 +416,7 @@ public class mcMMO extends JavaPlugin {
 
         //Init the blacklist
         worldBlacklist = new WorldBlacklist(this);
+        chunkListener.startReconciliation(this);
 
         //Set up Adventure's audiences
         audiences = BukkitAudiences.create(this);
@@ -463,12 +481,20 @@ public class mcMMO extends JavaPlugin {
     @Override
     public void onDisable() {
         setServerShutdown(true);
+        pendingBlockChanges.clear(getUserBlockTracker());
+        chunkListener.stopReconciliation();
+        TrackedEntity.clearTracking();
+        DodgeXpTracker.clearAll();
+        WorldGuardUtils.clearHook();
         //TODO: Write code to catch unfinished async save tasks, for now we just hope they finish in time, which they should in most cases
         mcMMO.p.getLogger()
                 .info("Server shutdown has been executed, saving and cleaning up data...");
 
         try {
             UserManager.saveAll();      // Make sure to save player information if the server shuts down
+            if (pendingExperienceManager != null) {
+                pendingExperienceManager.close();
+            }
             UserManager.clearAll();
             if (levelUpCommandManager != null) {
                 levelUpCommandManager.clearAll();
@@ -749,12 +775,15 @@ public class mcMMO extends JavaPlugin {
 
         // Register events
         pluginManager.registerEvents(new PlayerListener(this), this);
-        pluginManager.registerEvents(new BlockListener(this), this);
+        final BlockListener blockListener = new BlockListener(this);
+        pluginManager.registerEvents(blockListener, this);
+        blockListener.registerPaperBlockDestroyEvent(pluginManager);
         pluginManager.registerEvents(new EntityListener(this), this);
         pluginManager.registerEvents(new InventoryListener(this), this);
         pluginManager.registerEvents(new SelfListener(this), this);
         pluginManager.registerEvents(new WorldListener(this), this);
-        pluginManager.registerEvents(new ChunkListener(), this);
+        pluginManager.registerEvents(chunkListener, this);
+        pluginManager.registerEvents(new WorldGuardLifecycleListener(), this);
         //        pluginManager.registerEvents(new CommandListener(this), this);
     }
 
@@ -997,6 +1026,10 @@ public class mcMMO extends JavaPlugin {
 
     public @NotNull FoliaLib getFoliaLib() {
         return foliaLib;
+    }
+
+    public PendingExperienceManager getPendingExperienceManager() {
+        return pendingExperienceManager;
     }
 
     public @NotNull CommandOnLevelUpConfig getCommandOnLevelUpConfig() {

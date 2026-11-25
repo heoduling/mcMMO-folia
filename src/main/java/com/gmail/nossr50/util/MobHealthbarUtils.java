@@ -7,7 +7,10 @@ import com.gmail.nossr50.datatypes.MobHealthbarType;
 import com.gmail.nossr50.datatypes.meta.HealthbarSnapshot;
 import com.gmail.nossr50.mcMMO;
 import com.gmail.nossr50.runnables.MobHealthDisplayUpdaterTask;
+import com.gmail.nossr50.util.HealthbarDeathMessageUtils.DeathMessageName;
+import com.google.common.collect.MapMaker;
 import java.util.List;
+import java.util.concurrent.ConcurrentMap;
 import org.bukkit.ChatColor;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Player;
@@ -18,6 +21,10 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 public final class MobHealthbarUtils {
+    // Weak identity keys let a retired wrapper disappear even if its restore task never runs.
+    private static final ConcurrentMap<LivingEntity, DeathMessageName> DEATH_MESSAGE_NAMES =
+            new MapMaker().weakKeys().makeMap();
+
     private MobHealthbarUtils() {
     }
 
@@ -45,7 +52,10 @@ public final class MobHealthbarUtils {
     public static String fixDeathMessage(String deathMessage, Player player) {
         if (player.getLastDamageCause() instanceof EntityDamageByEntityEvent edbe
                 && edbe.getDamager() instanceof LivingEntity attacker) {
-            restoreNameFromSnapshot(attacker);
+            final var folia = mcMMO.p.getFoliaLib();
+            if (!folia.isFolia() || folia.getScheduler().isOwnedByCurrentRegion(attacker)) {
+                restoreNameFromSnapshot(attacker);
+            }
         }
         return deathMessage;
     }
@@ -84,11 +94,23 @@ public final class MobHealthbarUtils {
         // so that restoration calls setCustomName(null) and correctly clears the custom name slot.
         final @Nullable String previousCustomName = target.getCustomName();
         final boolean previousNameVisible = target.isCustomNameVisible();
+        final boolean firstHit = !target.hasMetadata(MetadataConstants.METADATA_KEY_HEALTHBAR_SNAPSHOT);
 
         final String newName = createHealthDisplay(healthbarType, target, damage);
+        final boolean captureName = plugin.getFoliaLib().isFolia()
+                && (firstHit || !newName.equals(previousCustomName));
+        final DeathMessageName previous = captureName && !firstHit ? DEATH_MESSAGE_NAMES.get(target) : null;
+        final String originalName = captureName && firstHit ? HealthbarDeathMessageUtils.captureName(target)
+                : previous == null ? null : previous.originalNameJson();
 
         target.setCustomName(newName);
         target.setCustomNameVisible(true);
+        if (originalName != null) {
+            final String healthbar = HealthbarDeathMessageUtils.captureName(target);
+            if (healthbar != null) {
+                DEATH_MESSAGE_NAMES.put(target, new DeathMessageName(target.getUniqueId(), healthbar, originalName));
+            }
+        }
 
         final int displayTime = mcMMO.p.getGeneralConfig().getMobHealthbarTime();
 
@@ -96,7 +118,7 @@ public final class MobHealthbarUtils {
         final long displayTimeMs = (long) displayTime * 1000L;
         final long initialDelayTicks = (long) displayTime * Misc.TICK_CONVERSION_FACTOR;
 
-        if (!target.hasMetadata(MetadataConstants.METADATA_KEY_HEALTHBAR_SNAPSHOT)) {
+        if (firstHit) {
             // First hit: capture original name and schedule ONE self-managing cleanup task.
             // The task polls every few ticks after the initial delay and extends itself whenever
             // the mob is hit again before the display window expires.
@@ -137,6 +159,7 @@ public final class MobHealthbarUtils {
      * @param entity the entity to restore
      */
     public static void restoreNameFromSnapshot(@NotNull LivingEntity entity) {
+        DEATH_MESSAGE_NAMES.remove(entity);
         final List<MetadataValue> meta =
                 entity.getMetadata(MetadataConstants.METADATA_KEY_HEALTHBAR_SNAPSHOT);
         if (meta.isEmpty()) {
@@ -148,6 +171,11 @@ public final class MobHealthbarUtils {
         entity.setCustomName(snapshot.previousCustomName());
         entity.setCustomNameVisible(snapshot.previousNameVisible());
         entity.removeMetadata(MetadataConstants.METADATA_KEY_HEALTHBAR_SNAPSHOT, mcMMO.p);
+    }
+
+    /** Returns the immutable name snapshot without accessing live Bukkit state. */
+    public static @Nullable DeathMessageName getDeathMessageName(@NotNull LivingEntity entity) {
+        return DEATH_MESSAGE_NAMES.get(entity);
     }
 
     /**

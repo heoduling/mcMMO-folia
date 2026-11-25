@@ -36,6 +36,10 @@ public class BitSetChunkStore implements ChunkStore {
         this(world.getUID(), world.getMinHeight(), world.getMaxHeight(), cx, cz);
     }
 
+    BitSetChunkStore(WorldBounds bounds, int cx, int cz) {
+        this(bounds.worldId(), bounds.minHeight(), bounds.maxHeight(), cx, cz);
+    }
+
     private BitSetChunkStore(@NotNull UUID worldUid, int worldMin, int worldMax, int cx, int cz) {
         this.cx = cx;
         this.cz = cz;
@@ -108,6 +112,23 @@ public class BitSetChunkStore implements ChunkStore {
         return store.isEmpty();
     }
 
+    int nextMarkedIndex(int start) {
+        return store.nextSetBit(start);
+    }
+
+    BitSetChunkStore copyMarks() {
+        final BitSetChunkStore copy = new BitSetChunkStore(worldUid, worldMin, worldMax, cx, cz);
+        copy.store.or(store);
+        return copy;
+    }
+
+    void clearMarkedIndex(int index) {
+        if (store.get(index)) {
+            store.clear(index);
+            dirty = true;
+        }
+    }
+
     /**
      * Merge anti-exploit "block is player-placed" markers from {@code other} into this store.
      * Only set bits are copied; cleared bits in {@code other} never clear a bit that is set in
@@ -132,7 +153,7 @@ public class BitSetChunkStore implements ChunkStore {
     }
 
     private static int coordToIndex(int x, int y, int z, int worldMin, int worldMax) {
-        if (x < 0 || x >= 16 || y < worldMin || y > worldMax || z < 0 || z >= 16) {
+        if (x < 0 || x >= 16 || y < worldMin || y >= worldMax || z < 0 || z >= 16) {
             throw new IndexOutOfBoundsException(
                     String.format("x: %d y: %d z: %d World Min: %d World Max: %d", x, y, z,
                             worldMin, worldMax));
@@ -182,7 +203,8 @@ public class BitSetChunkStore implements ChunkStore {
         dirty = false;
     }
 
-    private static @NotNull BitSetChunkStore deserialize(@NotNull DataInputStream in)
+    private static @NotNull BitSetChunkStore deserialize(@NotNull DataInputStream in,
+            @Nullable WorldBounds bounds)
             throws IOException {
         int magic = in.readInt();
         // Can be used to determine the format of the file
@@ -208,8 +230,11 @@ public class BitSetChunkStore implements ChunkStore {
         in.readFully(temp);
         BitSet stored = BitSet.valueOf(temp);
 
-        int currentWorldMin = getWorldMin(worldUid);
-        int currentWorldMax = getWorldMax(worldUid);
+        if (bounds != null && !bounds.worldId().equals(worldUid)) {
+            throw new IOException("Unexpected world UUID in chunk store: " + worldUid);
+        }
+        int currentWorldMin = bounds == null ? getWorldMin(worldUid) : bounds.minHeight();
+        int currentWorldMax = bounds == null ? getWorldMax(worldUid) : bounds.maxHeight();
 
         // The order in which the world height update code occurs here is important, the world max truncate math only holds up if done before adjusting for min changes
         // Lop off extra data if world max has shrunk
@@ -247,12 +272,20 @@ public class BitSetChunkStore implements ChunkStore {
         return chunkStore;
     }
 
+    record WorldBounds(@NotNull UUID worldId, int minHeight, int maxHeight) {
+    }
+
     public static class Serialization {
 
         public static final short STREAM_MAGIC = (short) 0xACDC; // Rock on
 
         public static @Nullable ChunkStore readChunkStore(@NotNull DataInputStream inputStream)
                 throws IOException {
+            return readChunkStore(inputStream, null);
+        }
+
+        static @Nullable ChunkStore readChunkStore(@NotNull DataInputStream inputStream,
+                @Nullable WorldBounds bounds) throws IOException {
             if (inputStream.markSupported()) {
                 inputStream.mark(2);
             }
@@ -271,10 +304,10 @@ public class BitSetChunkStore implements ChunkStore {
                     pushbackInputStream.unread((magicNumber >>> 8) & 0xFF);
                     inputStream = new DataInputStream(pushbackInputStream);
                 }
-                return new LegacyDeserializationInputStream(inputStream).readLegacyChunkStore();
+                return new LegacyDeserializationInputStream(inputStream).readLegacyChunkStore(bounds);
             } else if (magicNumber == STREAM_MAGIC) {
                 // Pure bytes format
-                return BitSetChunkStore.deserialize(inputStream);
+                return BitSetChunkStore.deserialize(inputStream, bounds);
             }
             throw new IOException("Bad Data Format");
         }
@@ -323,9 +356,12 @@ public class BitSetChunkStore implements ChunkStore {
                     worldMax = store[0][0].length;
                 }
 
-                public @NotNull BitSetChunkStore convert() {
-                    int currentWorldMin = getWorldMin(worldUid);
-                    int currentWorldMax = getWorldMax(worldUid);
+                public @NotNull BitSetChunkStore convert(@Nullable WorldBounds bounds) throws IOException {
+                    if (bounds != null && !bounds.worldId().equals(worldUid)) {
+                        throw new IOException("Unexpected world UUID in legacy chunk store: " + worldUid);
+                    }
+                    int currentWorldMin = bounds == null ? getWorldMin(worldUid) : bounds.minHeight();
+                    int currentWorldMax = bounds == null ? getWorldMax(worldUid) : bounds.maxHeight();
 
                     BitSetChunkStore converted = new BitSetChunkStore(worldUid, currentWorldMin,
                             currentWorldMax, cx, cz);
@@ -362,10 +398,10 @@ public class BitSetChunkStore implements ChunkStore {
                 return read;
             }
 
-            public @Nullable ChunkStore readLegacyChunkStore() {
+            public @Nullable ChunkStore readLegacyChunkStore(@Nullable WorldBounds bounds) {
                 try {
                     LegacyChunkStoreDeserializer deserializer = (LegacyChunkStoreDeserializer) readObject();
-                    return deserializer.convert();
+                    return deserializer.convert(bounds);
                 } catch (IOException | ClassNotFoundException e) {
                     return null;
                 }

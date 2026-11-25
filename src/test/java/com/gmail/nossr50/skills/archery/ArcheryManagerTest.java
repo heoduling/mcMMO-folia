@@ -31,6 +31,7 @@ import com.gmail.nossr50.util.skills.RankUtils;
 import com.tcoded.folialib.FoliaLib;
 import com.tcoded.folialib.impl.PlatformScheduler;
 import com.tcoded.folialib.wrapper.task.WrappedTask;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Random;
 import java.util.UUID;
@@ -82,12 +83,14 @@ class ArcheryManagerTest extends MMOTestEnvironment {
         originalDazeBonusDamage = Archery.dazeBonusDamage;
         Archery.skillShotMaxBonusDamage = 9.0;
         Archery.dazeBonusDamage = 4.0;
+        TrackedEntity.startTracking();
 
         archeryManager = new ArcheryManager(mmoPlayer);
     }
 
     @AfterEach
     void tearDown() {
+        TrackedEntity.clearTracking();
         Archery.skillShotMaxBonusDamage = originalSkillShotMaxBonus;
         Archery.dazeBonusDamage = originalDazeBonusDamage;
         cleanUpStaticMocks();
@@ -238,10 +241,9 @@ class ArcheryManagerTest extends MMOTestEnvironment {
         @Test
         void trackedArrowsShouldBeCountedAndUnmarked() {
             // Given - a target hit by an arrow carrying the tracked-arrow marker
-            final LivingEntity target = mock(LivingEntity.class);
             final Location targetLocation = new Location(world, 0, 64, 0);
-            when(target.getUniqueId()).thenReturn(UUID.randomUUID());
-            when(target.getLocation()).thenReturn(targetLocation);
+            final LivingEntity target = ArcheryTest.mockTrackedTarget(UUID.randomUUID(), targetLocation,
+                    new HashMap<>());
             final Projectile arrow = mock(Projectile.class);
             when(arrow.hasMetadata(MetadataConstants.METADATA_KEY_TRACKED_ARROW))
                     .thenReturn(true);
@@ -264,9 +266,8 @@ class ArcheryManagerTest extends MMOTestEnvironment {
         @Test
         void untrackedArrowsShouldBeIgnored() {
             // Given - a target hit by a plain arrow without the marker
-            final LivingEntity target = mock(LivingEntity.class);
-            when(target.getUniqueId()).thenReturn(UUID.randomUUID());
-            when(target.getLocation()).thenReturn(new Location(world, 0, 64, 0));
+            final LivingEntity target = ArcheryTest.mockTrackedTarget(UUID.randomUUID(),
+                    new Location(world, 0, 64, 0), new HashMap<>());
             final Projectile arrow = mock(Projectile.class);
 
             // When - the hit is processed

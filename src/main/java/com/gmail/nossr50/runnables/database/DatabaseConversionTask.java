@@ -5,6 +5,7 @@ import com.gmail.nossr50.locale.LocaleLoader;
 import com.gmail.nossr50.mcMMO;
 import com.gmail.nossr50.util.CancellableRunnable;
 import org.bukkit.command.CommandSender;
+import org.bukkit.entity.Player;
 
 public class DatabaseConversionTask extends CancellableRunnable {
     private final DatabaseManager sourceDatabase;
@@ -22,6 +23,15 @@ public class DatabaseConversionTask extends CancellableRunnable {
     public void run() {
         sourceDatabase.convertUsers(mcMMO.getDatabaseManager());
 
-        mcMMO.p.getFoliaLib().getScheduler().runNextTick(t -> sender.sendMessage(message));
+        final var scheduler = mcMMO.p.getFoliaLib().getScheduler();
+        if (sender instanceof Player player) {
+            scheduler.runAtEntity(player, task -> {
+                if (player.isOnline()) {
+                    player.sendMessage(message);
+                }
+            });
+        } else {
+            scheduler.runNextTick(task -> sender.sendMessage(message));
+        }
     }
 }

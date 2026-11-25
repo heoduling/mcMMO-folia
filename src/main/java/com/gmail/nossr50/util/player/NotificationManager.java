@@ -11,12 +11,12 @@ import com.gmail.nossr50.events.skills.McMMOPlayerNotificationEvent;
 import com.gmail.nossr50.locale.LocaleLoader;
 import com.gmail.nossr50.mcMMO;
 import com.gmail.nossr50.util.Permissions;
+import com.gmail.nossr50.util.Misc;
 import com.gmail.nossr50.util.sounds.SoundManager;
 import com.gmail.nossr50.util.sounds.SoundType;
 import com.gmail.nossr50.util.text.McMMOMessageType;
 import com.gmail.nossr50.util.text.TextComponentFactory;
 import java.time.LocalDate;
-import java.util.function.Predicate;
 import net.kyori.adventure.audience.Audience;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.TextReplacementConfig;
@@ -25,6 +25,7 @@ import net.kyori.adventure.text.format.TextColor;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
+import org.bukkit.Location;
 import org.bukkit.Server;
 import org.bukkit.SoundCategory;
 import org.bukkit.command.CommandSender;
@@ -393,7 +394,7 @@ public class NotificationManager {
         }
 
         final String skillName = mcMMO.p.getSkillTools().getLocalizedSkillName(primarySkillType);
-        broadcastMilestone(mmoPlayer, getLevelUpBroadcastPredicate(mmoPlayer.getPlayer()),
+        broadcastMilestone(mmoPlayer, false,
                 skillName + " reached level " + level,
                 LocaleLoader.getString("Broadcasts.LevelUpMilestone",
                         mmoPlayer.getPlayer().getDisplayName(), level, skillName));
@@ -409,20 +410,39 @@ public class NotificationManager {
             return;
         }
 
-        broadcastMilestone(mmoPlayer, getPowerLevelUpBroadcastPredicate(mmoPlayer.getPlayer()),
+        broadcastMilestone(mmoPlayer, true,
                 "Power level has reached " + powerLevel,
                 LocaleLoader.getString("Broadcasts.PowerLevelUpMilestone",
                         mmoPlayer.getPlayer().getDisplayName(), powerLevel));
     }
 
-    private static void broadcastMilestone(@NotNull McMMOPlayer mmoPlayer,
-            @NotNull Predicate<CommandSender> broadcastPredicate, @NotNull String hoverSummary,
-            @NotNull String localeMessage) {
-        //Grab appropriate audience
-        final Audience audience = mcMMO.getAudiences().filter(broadcastPredicate);
+    private static void broadcastMilestone(@NotNull McMMOPlayer mmoPlayer, boolean power,
+            @NotNull String hoverSummary, @NotNull String localeMessage) {
+        final Player broadcaster = mmoPlayer.getPlayer();
+        final var config = mcMMO.p.getGeneralConfig();
+        final var scheduler = mcMMO.p.getFoliaLib().getScheduler();
+        if (!scheduler.isOwnedByCurrentRegion(broadcaster)) {
+            scheduler.runAtEntity(broadcaster, task -> broadcastMilestone(mmoPlayer, power,
+                    hoverSummary, localeMessage));
+            return;
+        }
+        if (!broadcaster.isOnline() || UserManager.getPlayer(broadcaster) != mmoPlayer) {
+            return;
+        }
+        final boolean partyOnly = power ? config.isPowerLevelUpBroadcastsPartyMembersOnly()
+                : config.isLevelUpBroadcastsPartyMembersOnly();
+        final boolean sameWorld = power ? config.isPowerLevelUpBroadcastsSameWorldOnly()
+                : config.isLevelUpBroadcastsSameWorldOnly();
+        final boolean restrictDistance = sameWorld && (power ? config.shouldPowerLevelUpBroadcastsRestrictDistance()
+                : config.shouldLevelUpBroadcastsRestrictDistance());
+        final double radius = power ? config.getPowerLevelUpBroadcastRadius() : config.getLevelUpBroadcastRadius();
+        final boolean console = power ? config.shouldPowerLevelUpBroadcastToConsole()
+                : config.shouldLevelUpBroadcastToConsole();
+        final var party = partyOnly ? mmoPlayer.getParty() : null;
+        final Location origin = sameWorld ? broadcaster.getLocation() : null;
         //TODO: Make prettier
         final HoverEvent<Component> levelMilestoneHover = Component.text(
-                        mmoPlayer.getPlayer().getName())
+                        broadcaster.getName())
                 .append(Component.newline())
                 .append(Component.text(LocalDate.now().toString()))
                 .append(Component.newline())
@@ -433,8 +453,29 @@ public class NotificationManager {
         final Component message = LegacyComponentSerializer.legacySection()
                 .deserialize(localeMessage).hoverEvent(levelMilestoneHover);
 
-        // TODO: Update system msg API
-        mcMMO.p.getFoliaLib().getScheduler().runNextTick(t -> audience.sendMessage(message));
+        for (Player recipient : Bukkit.getOnlinePlayers()) {
+            scheduler.runAtEntity(recipient, task -> {
+                if (!recipient.isOnline()) {
+                    return;
+                }
+                if (partyOnly) {
+                    final McMMOPlayer recipientProfile = UserManager.getPlayer(recipient);
+                    if (party == null || recipientProfile == null || !party.equals(recipientProfile.getParty())) {
+                        return;
+                    }
+                }
+                if (origin != null && (!origin.getWorld().equals(recipient.getWorld())
+                        || (restrictDistance && !Misc.isNear(origin, recipient.getLocation(), radius)))) {
+                    return;
+                }
+                if (recipient == broadcaster || recipient.canSee(broadcaster)) {
+                    mcMMO.getAudiences().player(recipient).sendMessage(message);
+                }
+            });
+        }
+        if (console) {
+            scheduler.runNextTick(task -> mcMMO.getAudiences().console().sendMessage(message));
+        }
     }
 
     public static @NotNull LevelUpBroadcastPredicate<CommandSender> getLevelUpBroadcastPredicate(

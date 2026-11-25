@@ -27,6 +27,7 @@ import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
+import java.nio.file.Files;
 import java.util.BitSet;
 import java.util.zip.DeflaterOutputStream;
 import java.util.zip.InflaterInputStream;
@@ -77,17 +78,18 @@ public class McMMOSimpleRegionFile implements AutoCloseable {
 
         RandomAccessFile raf = null;
         try {
+            boolean created = parent.createNewFile();
             raf = new RandomAccessFile(parent, "rw");
 
-            // New file, write out header bytes
-            if (raf.length() < RESERVED_HEADER_BYTES) {
+            if (created) {
                 raf.write(new byte[RESERVED_HEADER_BYTES]);
                 raf.seek(SEEK_FILE_INFO);
                 raf.writeInt(DEFAULT_SEGMENT_EXPONENT);
+            } else if (raf.length() < RESERVED_HEADER_BYTES) {
+                throw new IOException("Truncated region header in " + parent);
             }
 
-            // RandomAccessFile.readInt() performs four native reads per integer. Decode
-            // the header in memory to avoid thousands of reads while a region tick waits.
+            // Decode the header in memory to avoid thousands of small file reads.
             final byte[] headerBytes = new byte[SEEK_FILE_INFO + Integer.BYTES];
             raf.seek(0);
             raf.readFully(headerBytes);
@@ -192,6 +194,47 @@ public class McMMOSimpleRegionFile implements AutoCloseable {
         return new DataInputStream(new InflaterInputStream(new ByteArrayInputStream(data)));
     }
 
+    /**
+     * Read an existing chunk without creating or repairing the region file. Callers must
+     * discard this snapshot if a write to the region overlaps the read.
+     */
+    static @Nullable DataInputStream readChunkData(@NotNull File path, int x, int z) throws IOException {
+        if (Files.notExists(path.toPath())) {
+            return null;
+        }
+
+        try (RandomAccessFile input = new RandomAccessFile(path, "r")) {
+            final long fileLength = input.length();
+            if (fileLength < RESERVED_HEADER_BYTES) {
+                throw new IOException("Truncated region header in " + path);
+            }
+
+            final int index = chunkIndex(x, z);
+            input.seek(SEEK_FILE_INFO);
+            final int exponent = input.readInt();
+            input.seek(SEEK_CHUNK_SEGMENT_INDICES + Integer.BYTES * index);
+            final int segment = input.readInt();
+            input.seek(SEEK_CHUNK_BYTE_LENGTHS + Integer.BYTES * index);
+            final int length = input.readInt();
+            if (exponent < 0 || exponent > 30 || segment < 0 || length < 0) {
+                throw new IOException("Corrupt chunk header in " + path + " at index " + index);
+            }
+            if (length == 0) {
+                return null;
+            }
+
+            final long offset = (long) segment << exponent;
+            if (offset < RESERVED_HEADER_BYTES || offset > fileLength - length) {
+                throw new IOException("Chunk outside the region file " + path + " at index " + index);
+            }
+
+            final byte[] data = new byte[length];
+            input.seek(offset);
+            input.readFully(data);
+            return new DataInputStream(new InflaterInputStream(new ByteArrayInputStream(data)));
+        }
+    }
+
     @Override
     public synchronized void close() {
         try {
@@ -289,9 +332,10 @@ public class McMMOSimpleRegionFile implements AutoCloseable {
             throw new IndexOutOfBoundsException();
         }
 
-        x = x & 0x1F; // 5 bits (mod 32)
-        z = z & 0x1F; // 5 bits (mod 32)
+        return chunkIndex(x, z);
+    }
 
-        return (x << 5) + z; // x in the upper 5 bits, z in the lower 5 bits
+    private static int chunkIndex(int x, int z) {
+        return ((x & 0x1F) << 5) + (z & 0x1F);
     }
 }

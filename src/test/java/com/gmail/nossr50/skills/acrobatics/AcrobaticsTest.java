@@ -49,6 +49,7 @@ class AcrobaticsTest extends MMOTestEnvironment {
     @BeforeEach
     void setUp() throws InvalidSkillException {
         mockBaseEnvironment(logger);
+        DodgeXpTracker.startTracking();
         when(rankConfig.getSubSkillUnlockLevel(SubSkillType.ACROBATICS_ROLL, 1)).thenReturn(1);
         when(rankConfig.getSubSkillUnlockLevel(SubSkillType.ACROBATICS_DODGE, 1)).thenReturn(1);
 

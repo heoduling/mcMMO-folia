@@ -20,12 +20,28 @@ class DodgeXpTrackerTest {
 
     @BeforeEach
     void setUp() {
-        DodgeXpTracker.clearAll();
+        DodgeXpTracker.startTracking();
     }
 
     @AfterEach
     void tearDown() {
         DodgeXpTracker.clearAll();
+    }
+
+    @Test
+    void stoppingDropsRewardsAndRejectsNewActivityUntilTrackingRestarts() {
+        final UUID id = UUID.randomUUID();
+        for (int i = 0; i < 6; i++) {
+            assertThat(DodgeXpTracker.tryConsumeXpReward(id, START)).isTrue();
+        }
+        assertThat(DodgeXpTracker.tryConsumeXpReward(id, START)).isFalse();
+
+        DodgeXpTracker.clearAll();
+        assertThat(DodgeXpTracker.tryConsumeXpReward(id, START)).isFalse();
+        assertThat(DodgeXpTracker.trackedMobCount()).isZero();
+
+        DodgeXpTracker.startTracking();
+        assertThat(DodgeXpTracker.tryConsumeXpReward(id, START)).isTrue();
     }
 
     @Test

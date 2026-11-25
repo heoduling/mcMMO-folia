@@ -16,6 +16,7 @@ import com.gmail.nossr50.events.fake.FakeBlockDamageEvent;
 import com.gmail.nossr50.events.fake.FakeEvent;
 import com.gmail.nossr50.events.items.McMMOModifyBlockDropItemEvent;
 import com.gmail.nossr50.mcMMO;
+import com.gmail.nossr50.runnables.StickyPistonTrackerTask;
 import com.gmail.nossr50.runnables.skills.AlchemyBrewTask;
 import com.gmail.nossr50.skills.alchemy.Alchemy;
 import com.gmail.nossr50.skills.excavation.ExcavationManager;
@@ -27,6 +28,9 @@ import com.gmail.nossr50.util.ContainerMetadataUtils;
 import com.gmail.nossr50.util.EventUtils;
 import com.gmail.nossr50.util.ItemUtils;
 import com.gmail.nossr50.util.Permissions;
+import com.gmail.nossr50.util.blockmeta.HashChunkManager;
+import com.gmail.nossr50.util.blockmeta.NullChunkManager;
+import com.gmail.nossr50.util.blockmeta.PendingBlockChanges;
 import com.gmail.nossr50.util.player.UserManager;
 import com.gmail.nossr50.util.skills.SkillUtils;
 import com.gmail.nossr50.util.sounds.SoundManager;
@@ -34,7 +38,10 @@ import com.gmail.nossr50.util.sounds.SoundType;
 import com.gmail.nossr50.worldguard.WorldGuardManager;
 import com.gmail.nossr50.worldguard.WorldGuardUtils;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.function.BooleanSupplier;
 import org.bukkit.ChatColor;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
@@ -42,34 +49,56 @@ import org.bukkit.Material;
 import org.bukkit.OfflinePlayer;
 import org.bukkit.World;
 import org.bukkit.block.Block;
-import org.bukkit.block.BlockFace;
 import org.bukkit.block.BlockState;
 import org.bukkit.block.BrewingStand;
 import org.bukkit.block.Furnace;
 import org.bukkit.entity.Item;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.Cancellable;
+import org.bukkit.event.Event;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.block.BlockBurnEvent;
 import org.bukkit.event.block.BlockDamageEvent;
 import org.bukkit.event.block.BlockDropItemEvent;
+import org.bukkit.event.block.BlockEvent;
+import org.bukkit.event.block.BlockExplodeEvent;
 import org.bukkit.event.block.BlockFormEvent;
+import org.bukkit.event.block.BlockFadeEvent;
 import org.bukkit.event.block.BlockGrowEvent;
 import org.bukkit.event.block.BlockMultiPlaceEvent;
 import org.bukkit.event.block.BlockPistonExtendEvent;
 import org.bukkit.event.block.BlockPistonRetractEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.block.EntityBlockFormEvent;
+import org.bukkit.event.block.LeavesDecayEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.metadata.FixedMetadataValue;
 import org.bukkit.metadata.MetadataValue;
+import org.bukkit.plugin.PluginManager;
 
 public class BlockListener implements Listener {
     private final mcMMO plugin;
 
     public BlockListener(final mcMMO plugin) {
         this.plugin = plugin;
+    }
+
+    /** Registers Paper's destruction event when it is available on the running server. */
+    public void registerPaperBlockDestroyEvent(final PluginManager pluginManager) {
+        try {
+            final Class<? extends Event> eventType = Class.forName(
+                    "com.destroystokyo.paper.event.block.BlockDestroyEvent").asSubclass(Event.class);
+            pluginManager.registerEvent(eventType, this, EventPriority.MONITOR, (listener, event) -> {
+                if (event instanceof BlockEvent destruction && event instanceof Cancellable cancellable) {
+                    clearAfterDestruction(destruction.getBlock(), cancellable);
+                }
+            }, plugin, true);
+        } catch (ClassNotFoundException ignored) {
+            // Spigot does not expose this event.
+        }
     }
 
     @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
@@ -184,28 +213,9 @@ public class BlockListener implements Listener {
      *
      * @param event The event to monitor
      */
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    @EventHandler(priority = EventPriority.MONITOR)
     public void onBlockPistonExtend(BlockPistonExtendEvent event) {
-        /* WORLD BLACKLIST CHECK */
-        if (WorldBlacklist.isWorldBlacklisted(event.getBlock().getWorld())) {
-            return;
-        }
-
-        if (!ExperienceConfig.getInstance().isPistonCheatingPrevented()) {
-            return;
-        }
-
-        final BlockFace direction = event.getDirection();
-
-        for (final Block block : event.getBlocks()) {
-            mcMMO.p.getFoliaLib().getScheduler().runAtLocation(block.getLocation(), t -> {
-                final Block movedBlock = block.getRelative(direction);
-
-                if (BlockUtils.isWithinWorldBounds(movedBlock)) {
-                    BlockUtils.setUnnaturalBlock(movedBlock);
-                }
-            });
-        }
+        StickyPistonTrackerTask.trackMovement(plugin, event, event.getBlocks());
     }
 
     /**
@@ -213,32 +223,9 @@ public class BlockListener implements Listener {
      *
      * @param event The event to watch
      */
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    @EventHandler(priority = EventPriority.MONITOR)
     public void onBlockPistonRetract(BlockPistonRetractEvent event) {
-        /* WORLD BLACKLIST CHECK */
-        if (WorldBlacklist.isWorldBlacklisted(event.getBlock().getWorld())) {
-            return;
-        }
-
-        if (!ExperienceConfig.getInstance().isPistonCheatingPrevented()) {
-            return;
-        }
-
-        BlockFace direction = event.getDirection();
-        Block movedBlock = event.getBlock().getRelative(direction);
-
-        //Spigot makes bad things happen in its API
-        if (BlockUtils.isWithinWorldBounds(movedBlock)) {
-            BlockUtils.setUnnaturalBlock(movedBlock);
-        }
-
-        for (Block block : event.getBlocks()) {
-            if (BlockUtils.isWithinWorldBounds(block) && BlockUtils.isWithinWorldBounds(
-                    block.getRelative(direction))) {
-                Block relativeBlock = block.getRelative(direction);
-                BlockUtils.setUnnaturalBlock(relativeBlock);
-            }
-        }
+        StickyPistonTrackerTask.trackMovement(plugin, event, event.getBlocks());
     }
 
     /**
@@ -306,23 +293,15 @@ public class BlockListener implements Listener {
      *
      * @param event The event to watch
      */
-    @EventHandler(priority = EventPriority.MONITOR)
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onBlockPlace(BlockPlaceEvent event) {
         final Block block = event.getBlock();
-
-        /* Check if the blocks placed should be monitored so they do not give out XP in the future */
-//      if (!Tag.LOGS.isTagged(event.getBlockReplacedState().getType()) || !Tag.LOGS.isTagged(event.getBlockPlaced().getType()))
-
-        /* WORLD BLACKLIST CHECK */
-        if (WorldBlacklist.isWorldBlacklisted(block.getWorld())) {
+        if (event.isCancelled() || !event.canBuild() || WorldBlacklist.isWorldBlacklisted(block.getWorld())) {
             return;
         }
 
-        if (BlockUtils.isWithinWorldBounds(block)) {
-            //NOTE: BlockMultiPlace has its own logic so don't handle anything that would overlap
-            if (!(event instanceof BlockMultiPlaceEvent)) {
-                BlockUtils.setUnnaturalBlock(block);
-            }
+        if (!(event instanceof BlockMultiPlaceEvent) && BlockUtils.isWithinWorldBounds(block)) {
+            markPlacement(event, List.of(block));
         }
 
         Player player = event.getPlayer();
@@ -356,28 +335,81 @@ public class BlockListener implements Listener {
      */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onBlockMultiPlace(BlockMultiPlaceEvent event) {
-        /* Check if the blocks placed should be monitored so they do not give out XP in the future */
-        boolean anyWithinWorldBounds = false;
-        for (BlockState replacedBlockState : event.getReplacedBlockStates()) {
-            if (BlockUtils.isWithinWorldBounds(replacedBlockState.getBlock())) {
-                anyWithinWorldBounds = true;
-                break;
+        final Block placedBlock = event.getBlockPlaced();
+        if (event.isCancelled() || !event.canBuild() || WorldBlacklist.isWorldBlacklisted(placedBlock.getWorld())) {
+            return;
+        }
+
+        // Azalea growth may also fire a multi-place event.
+        if (BlockUtils.isWithinWorldBounds(placedBlock) && BlockUtils.isPartOfTree(placedBlock)) {
+            return;
+        }
+
+        final List<Block> placed = new ArrayList<>();
+        for (BlockState replacedState : event.getReplacedBlockStates()) {
+            final Block block = replacedState.getBlock();
+            if (BlockUtils.isWithinWorldBounds(block)) {
+                placed.add(block);
             }
         }
+        markPlacement(event, placed);
+    }
 
-        if (!anyWithinWorldBounds) {
+    private void markPlacement(BlockPlaceEvent event, List<Block> blocks) {
+        final var tracker = mcMMO.getUserBlockTracker();
+        if (blocks.isEmpty()) {
             return;
         }
-
-        //Updated: 10/5/2021
-        //Note: For some reason Azalea trees trigger this event but no other tree does (as of 10/5/2021) but if this changes in the future we may need to update this
-        if (BlockUtils.isPartOfTree(event.getBlockPlaced())) {
+        if (tracker instanceof NullChunkManager) {
+            blocks.forEach(BlockUtils::setUnnaturalBlock);
             return;
         }
+        final PendingBlockChanges changes = plugin.getPendingBlockChanges();
+        final Map<Block, PendingBlockChanges.Ticket> tickets = new HashMap<>();
+        final BooleanSupplier succeeds = () -> !event.isCancelled() && event.canBuild();
+        for (Block block : blocks) {
+            if (tickets.containsKey(block)) {
+                continue;
+            }
+            final PendingBlockChanges.Ticket ticket;
+            if (tracker instanceof HashChunkManager manager) {
+                final Runnable restoreMark = manager.capturePlacementMark(block);
+                ticket = changes.place(block, ignored -> restoreMark.run(), succeeds);
+            } else {
+                ticket = changes.place(block, tracker.isIneligible(block), succeeds);
+            }
+            tickets.put(block, ticket);
+            BlockUtils.setUnnaturalBlock(block);
+        }
 
-        //Track unnatural blocks
-        for (BlockState replacedState : event.getReplacedBlockStates()) {
-            BlockUtils.setUnnaturalBlock(replacedState.getBlock());
+        final var scheduler = plugin.getFoliaLib().getScheduler();
+        final World world = event.getBlock().getWorld();
+        try {
+            scheduler.runAtLocationLater(event.getBlock().getLocation(), task -> {
+                final boolean succeeded = !event.isCancelled() && event.canBuild();
+                tickets.forEach((block, ticket) -> {
+                    final Runnable settle = () -> {
+                        try {
+                            if (plugin.getServer().getWorld(world.getUID()) == world
+                                    && world.isChunkLoaded(block.getX() >> 4, block.getZ() >> 4)) {
+                                changes.settlePlacement(ticket, block, tracker);
+                            }
+                        } finally {
+                            changes.finish(ticket, succeeded);
+                        }
+                    };
+                    if (scheduler.isOwnedByCurrentRegion(block)) {
+                        settle.run();
+                    } else if (world.isChunkLoaded(block.getX() >> 4, block.getZ() >> 4)) {
+                        scheduler.runAtLocation(block.getLocation(), callback -> settle.run());
+                    } else {
+                        changes.finish(ticket, false);
+                    }
+                });
+            }, 1);
+        } catch (RuntimeException ex) {
+            tickets.values().forEach(ticket -> changes.finish(ticket, false));
+            throw ex;
         }
     }
 
@@ -408,6 +440,13 @@ public class BlockListener implements Listener {
         final Block block = event.getBlock();
 
         if (event instanceof FakeBlockBreakEvent) {
+            return;
+        }
+
+        plugin.getPendingBlockChanges().breaking(event);
+
+        if (!BlockUtils.isWithinWorldBounds(block)) {
+            BlockUtils.cleanupBlockMetadata(block);
             return;
         }
 
@@ -536,7 +575,7 @@ public class BlockListener implements Listener {
      */
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onBlockBreakHigher(BlockBreakEvent event) {
-        if (event instanceof FakeEvent) {
+        if (event instanceof FakeEvent || !BlockUtils.isWithinWorldBounds(event.getBlock())) {
             return;
         }
 
@@ -798,15 +837,90 @@ public class BlockListener implements Listener {
      *
      * @param event The event to monitor
      */
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    public void onBlockExplode(org.bukkit.event.block.BlockExplodeEvent event) {
-        // Clear block tracking for all exploded blocks (bed, respawn anchor, etc.)
-        // This prevents player-placed blocks from permanently marking coordinates as ineligible
-        for (Block block : event.blockList()) {
-            if (mcMMO.getUserBlockTracker().isIneligible(block)) {
-                mcMMO.getUserBlockTracker().setEligible(block);
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onBlockExplode(BlockExplodeEvent event) {
+        clearAfterExplosion(plugin, event.getBlock().getLocation(), event, event.blockList());
+    }
+
+    /** Uses the final list after event dispatch so late protection listeners can still change it. */
+    static void clearAfterExplosion(final mcMMO plugin, final Location origin, final Cancellable event,
+                                    final List<Block> affectedBlocks) {
+        final var scheduler = plugin.getFoliaLib().getScheduler();
+        final World world = origin.getWorld();
+        scheduler.runAtLocationLater(origin, task -> {
+            if (event.isCancelled() || plugin.getServer().getWorld(world.getUID()) != world
+                    || !world.isChunkLoaded(origin.getBlockX() >> 4, origin.getBlockZ() >> 4)) {
+                return;
+            }
+
+            final Map<BlastChunk, List<Block>> byChunk = new HashMap<>();
+            for (final Block block : affectedBlocks) {
+                if (block.getWorld() == world && BlockUtils.isWithinWorldBounds(block)) {
+                    final var chunk = new BlastChunk(block.getX() >> 4, block.getZ() >> 4);
+                    byChunk.computeIfAbsent(chunk, key -> new ArrayList<>()).add(block);
+                }
+            }
+
+            byChunk.forEach((chunk, blocks) -> {
+                final Block first = blocks.get(0);
+                if (scheduler.isOwnedByCurrentRegion(first)) {
+                    clearExplodedBlocks(world, chunk, blocks);
+                } else {
+                    scheduler.runAtLocation(first.getLocation(), ownerTask -> {
+                        if (plugin.getServer().getWorld(world.getUID()) == world) {
+                            clearExplodedBlocks(world, chunk, blocks);
+                        }
+                    });
+                }
+            });
+        }, 1);
+    }
+
+    private static void clearExplodedBlocks(final World world, final BlastChunk chunk, final List<Block> blocks) {
+        if (!world.isChunkLoaded(chunk.x(), chunk.z())) {
+            return;
+        }
+
+        final var tracker = mcMMO.getUserBlockTracker();
+        for (final Block block : blocks) {
+            if (block.getType().isAir() && tracker.isIneligible(block)) {
+                tracker.setEligible(block);
             }
         }
+    }
+
+    private record BlastChunk(int x, int z) { }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onBlockBurn(BlockBurnEvent event) {
+        clearAfterDestruction(event.getBlock(), event);
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onBlockFade(BlockFadeEvent event) {
+        clearAfterDestruction(event.getBlock(), event);
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onLeavesDecay(LeavesDecayEvent event) {
+        clearAfterDestruction(event.getBlock(), event);
+    }
+
+    private void clearAfterDestruction(Block block, Cancellable event) {
+        if (event.isCancelled() || !BlockUtils.isWithinWorldBounds(block)
+                || !mcMMO.getUserBlockTracker().isIneligible(block)) {
+            return;
+        }
+
+        plugin.getFoliaLib().getScheduler().runAtLocationLater(block.getLocation(), task -> {
+            final World world = block.getWorld();
+            if (!event.isCancelled()
+                    && plugin.getServer().getWorld(world.getUID()) == world
+                    && world.isChunkLoaded(block.getX() >> 4, block.getZ() >> 4)
+                    && block.getType().isAir()) {
+                BlockUtils.cleanupBlockMetadata(block);
+            }
+        }, 1);
     }
 
     /**

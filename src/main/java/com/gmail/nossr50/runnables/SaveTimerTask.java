@@ -11,6 +11,8 @@ public class SaveTimerTask extends CancellableRunnable {
     @Override
     public void run() {
         LogUtils.debug(mcMMO.p.getLogger(), "[User Data] Saving...");
+        mcMMO.p.getFoliaLib().getScheduler().runAsync(
+                ignored -> mcMMO.p.getPendingExperienceManager().saveSafely());
         // All player data will be saved periodically through this
         int count = 1;
 

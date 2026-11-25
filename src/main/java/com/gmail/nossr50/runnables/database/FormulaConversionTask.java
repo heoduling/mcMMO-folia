@@ -14,6 +14,7 @@ import com.gmail.nossr50.util.Misc;
 import com.gmail.nossr50.util.player.UserManager;
 import com.gmail.nossr50.util.skills.SkillTools;
 import org.bukkit.command.CommandSender;
+import org.bukkit.entity.Player;
 
 public class FormulaConversionTask extends CancellableRunnable {
     private final CommandSender sender;
@@ -53,8 +54,18 @@ public class FormulaConversionTask extends CancellableRunnable {
         }
         mcMMO.getFormulaManager().setPreviousFormulaType(formulaType);
 
-        sender.sendMessage(LocaleLoader.getString("Commands.mcconvert.Experience.Finish",
-                formulaType.toString()));
+        final String message = LocaleLoader.getString("Commands.mcconvert.Experience.Finish",
+                formulaType.toString());
+        final var scheduler = mcMMO.p.getFoliaLib().getScheduler();
+        if (sender instanceof Player player) {
+            scheduler.runAtEntity(player, task -> {
+                if (player.isOnline()) {
+                    player.sendMessage(message);
+                }
+            });
+        } else {
+            scheduler.runNextTick(task -> sender.sendMessage(message));
+        }
     }
 
     private void editValues(PlayerProfile profile) {

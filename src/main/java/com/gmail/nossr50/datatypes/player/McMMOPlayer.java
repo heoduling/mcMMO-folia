@@ -751,7 +751,10 @@ public class McMMOPlayer implements Identified {
         final McMMOPlayerPreXpGainEvent mmoPlayerPreXpGainEvent = new McMMOPlayerPreXpGainEvent(
                 player, primarySkillType, xp, xpGainReason);
         Bukkit.getPluginManager().callEvent(mmoPlayerPreXpGainEvent);
-        xp = mmoPlayerPreXpGainEvent.getXpGained();
+        if (mmoPlayerPreXpGainEvent.isCancelled()) {
+            return;
+        }
+        xp = mmoPlayerPreXpGainEvent.getRawXpGained();
 
         if (SkillTools.isChildSkill(primarySkillType)) {
             var parentSkills = mcMMO.p.getSkillTools().getChildSkillParents(primarySkillType);

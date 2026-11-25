@@ -23,6 +23,8 @@ import com.gmail.nossr50.util.BlockUtils;
 import com.gmail.nossr50.util.ChimaeraWing;
 import com.gmail.nossr50.util.EventUtils;
 import com.gmail.nossr50.util.HardcoreManager;
+import com.gmail.nossr50.util.HealthbarDeathMessageUtils;
+import com.gmail.nossr50.util.HealthbarDeathMessageUtils.DeathMessageName;
 import com.gmail.nossr50.util.LogUtils;
 import com.gmail.nossr50.util.MetadataConstants;
 import com.gmail.nossr50.util.Misc;
@@ -66,6 +68,7 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityPickupItemEvent;
+import org.bukkit.event.entity.EntityResurrectEvent;
 import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.player.AsyncPlayerChatEvent;
 import org.bukkit.event.player.PlayerChangedWorldEvent;
@@ -88,6 +91,7 @@ public class PlayerListener implements Listener {
 
     private final mcMMO plugin;
     private final Map<UUID, EquipmentSlot> fishingHandsByPlayer = new ConcurrentHashMap<>();
+    private final Map<UUID, PendingHealthbarDeathMessage> pendingHealthbarDeathMessages = new ConcurrentHashMap<>();
     // volatile so command handling on other region threads (Folia) sees a fully built cache
     private volatile SkillCommandAliasCache skillCommandAliases;
 
@@ -101,6 +105,9 @@ public class PlayerListener implements Listener {
      */
     private record SkillCommandAliasCache(int localeGeneration,
             Map<String, String> replacementByCommand) {
+    }
+
+    private record PendingHealthbarDeathMessage(EntityDamageByEntityEvent damageEvent, DeathMessageName name) {
     }
 
     /**
@@ -201,12 +208,46 @@ public class PlayerListener implements Listener {
             return;
         }
 
-        // temporarily clear the mob's name
-        MobHealthbarUtils.restoreNameFromSnapshot(attacker);
+        final var folia = plugin.getFoliaLib();
+        final var scheduler = folia.getScheduler();
+        if (!folia.isFolia() || scheduler.isOwnedByCurrentRegion(attacker)) {
+            // The core can read the original name while building the death message.
+            MobHealthbarUtils.restoreNameFromSnapshot(attacker);
+        } else {
+            final DeathMessageName name = MobHealthbarUtils.getDeathMessageName(attacker);
+            if (name != null) {
+                final UUID playerId = player.getUniqueId();
+                final var pending = new PendingHealthbarDeathMessage(event, name);
+                pendingHealthbarDeathMessages.put(playerId, pending);
+                // The core fires PlayerDeathEvent during the same damage call.
+                final Runnable clear = () -> pendingHealthbarDeathMessages.remove(playerId, pending);
+                scheduler.runAtEntityWithFallback(player, task -> clear.run(), clear)
+                        .whenComplete((result, failure) -> clear.run());
+            }
+        }
 
-        // set the name back
-        mcMMO.p.getFoliaLib().getScheduler().runAtEntityLater(attacker,
-                () -> MobHealthbarUtils.handleMobHealthbars(attacker, 0, mcMMO.p), 1);
+        // runAtEntity runs next tick and handles rejection when the attacker's scheduler is retired.
+        scheduler.runAtEntity(attacker, task -> MobHealthbarUtils.handleMobHealthbars(attacker, 0, plugin));
+    }
+
+    /** Restores the remote attacker's name if the core used its healthbar in this death. */
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onPlayerDeathHealthbar(PlayerDeathEvent event) {
+        final Player player = event.getEntity();
+        final PendingHealthbarDeathMessage pending = pendingHealthbarDeathMessages.remove(player.getUniqueId());
+        if (pending == null || player.getLastDamageCause() != pending.damageEvent()
+                || pending.damageEvent().isCancelled()) {
+            return;
+        }
+        HealthbarDeathMessageUtils.restoreAttackerName(event, pending.damageEvent().getDamageSource(), pending.name());
+    }
+
+    /** A successful resurrection consumes the lethal hit without generating a death message. */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onEntityResurrectHealthbar(EntityResurrectEvent event) {
+        if (event.getEntity() instanceof Player player) {
+            pendingHealthbarDeathMessages.remove(player.getUniqueId());
+        }
     }
 
     /**
@@ -634,6 +675,8 @@ public class PlayerListener implements Listener {
         Player player = event.getPlayer();
 
         fishingHandsByPlayer.remove(player.getUniqueId());
+        pendingHealthbarDeathMessages.remove(player.getUniqueId());
+        plugin.getPendingExperienceManager().quit(player);
 
         if (!UserManager.hasPlayerDataKey(player)) {
             return;

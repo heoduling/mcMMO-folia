@@ -963,12 +963,14 @@ public class EntityListener implements Listener {
             }
         }
 
-        // Clear block tracking for all exploded blocks (Creeper, Wither, EnderCrystal, TNT, etc.)
-        // This prevents player-placed blocks from permanently marking coordinates as ineligible
-        for (Block block : event.blockList()) {
-            if (mcMMO.getUserBlockTracker().isIneligible(block)) {
-                mcMMO.getUserBlockTracker().setEligible(block);
-            }
+    }
+
+    /** Tracks actual explosion damage separately from Blast Mining's drop calculations. */
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onEntityExplodeCleanup(EntityExplodeEvent event) {
+        final var location = event.getLocation();
+        if (!WorldBlacklist.isWorldBlacklisted(location.getWorld())) {
+            BlockListener.clearAfterExplosion(pluginRef, location, event, event.blockList());
         }
     }
 

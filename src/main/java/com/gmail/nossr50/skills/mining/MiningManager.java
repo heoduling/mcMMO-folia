@@ -26,12 +26,12 @@ import com.gmail.nossr50.util.player.NotificationManager;
 import com.gmail.nossr50.util.random.Probability;
 import com.gmail.nossr50.util.random.ProbabilityUtil;
 import com.gmail.nossr50.util.skills.RankUtils;
-import com.gmail.nossr50.util.skills.SkillUtils;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockState;
@@ -40,7 +40,9 @@ import org.bukkit.enchantments.Enchantment;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.TNTPrimed;
 import org.bukkit.event.entity.EntityExplodeEvent;
+import org.bukkit.event.player.PlayerItemDamageEvent;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.Damageable;
 import org.jetbrains.annotations.NotNull;
 
 public class MiningManager extends SkillManager {
@@ -129,8 +131,7 @@ public class MiningManager extends SkillManager {
         }
 
         if (mmoPlayer.getAbilityMode(mcMMO.p.getSkillTools().getSuperAbility(skill))) {
-            SkillUtils.handleDurabilityChange(getPlayer().getInventory().getItemInMainHand(),
-                    mcMMO.p.getGeneralConfig().getAbilityToolDamage());
+            applySuperBreakerWear(player, player.getInventory().getItemInMainHand());
         }
 
         if (!mcMMO.p.getGeneralConfig()
@@ -155,6 +156,35 @@ public class MiningManager extends SkillManager {
         } else {
             //If the user has no mastery, proceed with normal double drop routine
             processDoubleDrops(block);
+        }
+    }
+
+    private static void applySuperBreakerWear(@NotNull Player player, @NotNull ItemStack tool) {
+        final int configuredLoss = mcMMO.p.getGeneralConfig().getAbilityToolDamage();
+        if (configuredLoss <= 0 || !(tool.getItemMeta() instanceof Damageable meta) || meta.isUnbreakable()) {
+            return;
+        }
+
+        final int unbreaking = tool.getEnchantmentLevel(mcMMO.p.getEnchantmentMapper().getUnbreaking());
+        final int wear = Math.min(configuredLoss / (unbreaking + 1), ItemUtils.getItemMaxDamage(tool) - meta.getDamage());
+        if (wear <= 0) {
+            return;
+        }
+
+        final PlayerItemDamageEvent event = new PlayerItemDamageEvent(player, tool, wear);
+        Bukkit.getPluginManager().callEvent(event);
+        if (event.isCancelled() || event.getDamage() <= 0) {
+            return;
+        }
+
+        // Listeners may change the tool's components during the event.
+        if (tool.getItemMeta() instanceof Damageable current && !current.isUnbreakable()) {
+            final int damage = current.getDamage();
+            final int appliedWear = Math.min(event.getDamage(), ItemUtils.getItemMaxDamage(tool) - damage);
+            if (appliedWear > 0) {
+                current.setDamage(damage + appliedWear);
+                tool.setItemMeta(current);
+            }
         }
     }
 

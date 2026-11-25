@@ -42,6 +42,7 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.PotionMeta;
 import org.bukkit.potion.PotionEffect;
 import org.bukkit.potion.PotionEffectType;
+import org.bukkit.persistence.PersistentDataContainer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -221,6 +222,7 @@ class EntityListenerTest extends MMOTestEnvironment {
         final LivingEntity summon = mock(LivingEntity.class);
         when(summon.getWorld()).thenReturn(world);
         when(summon.getUniqueId()).thenReturn(UUID.randomUUID());
+        when(summon.getPersistentDataContainer()).thenReturn(mock(PersistentDataContainer.class));
         final TrackedTamingEntity trackedSummon = new TrackedTamingEntity(summon,
                 CallOfTheWildType.WOLF, player);
         mcMMO.getTransientEntityTracker().addSummon(playerUUID, trackedSummon);

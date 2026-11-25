@@ -34,8 +34,18 @@ public class McRankCommandAsyncTask extends CancellableRunnable {
     public void run() {
         Map<PrimarySkillType, Integer> skills = mcMMO.getDatabaseManager().readRank(playerName);
 
-        mcMMO.p.getFoliaLib().getScheduler().runNextTick(
-                new McRankCommandDisplayTask(skills, sender, playerName, useBoard, useChat));
+        final McRankCommandDisplayTask display = new McRankCommandDisplayTask(
+                skills, sender, playerName, useBoard, useChat);
+        final var scheduler = mcMMO.p.getFoliaLib().getScheduler();
+        if (sender instanceof Player player) {
+            scheduler.runAtEntity(player, task -> {
+                if (player.isOnline()) {
+                    display.run();
+                }
+            });
+        } else {
+            scheduler.runNextTick(display);
+        }
     }
 }
 

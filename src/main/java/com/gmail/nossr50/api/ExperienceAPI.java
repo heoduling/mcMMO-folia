@@ -17,6 +17,7 @@ import com.gmail.nossr50.datatypes.player.PlayerProfile;
 import com.gmail.nossr50.datatypes.skills.PrimarySkillType;
 import com.gmail.nossr50.mcMMO;
 import com.gmail.nossr50.util.player.UserManager;
+import com.gmail.nossr50.util.player.PendingExperienceManager.Mode;
 import com.gmail.nossr50.util.skills.CombatUtils;
 import com.gmail.nossr50.util.skills.SkillTools;
 import java.util.ArrayList;
@@ -142,14 +143,8 @@ public final class ExperienceAPI {
      */
     public static void addRawXP(Player player, String skillType, float XP, String xpGainReason,
             boolean isUnshared) {
-        if (isUnshared) {
-            getPlayer(player).beginUnsharedXpGain(getSkillType(skillType), XP,
-                    getXPGainReason(xpGainReason), CUSTOM);
-            return;
-        }
-
-        getPlayer(player).applyXpGain(getSkillType(skillType), XP, getXPGainReason(xpGainReason),
-                CUSTOM);
+        grantOnlineXP(player, getSkillType(skillType), XP, getXPGainReason(xpGainReason),
+                isUnshared ? Mode.UNSHARED : Mode.RAW);
     }
 
     /**
@@ -228,10 +223,10 @@ public final class ExperienceAPI {
     public static void addMultipliedXP(Player player, String skillType, int XP,
             String xpGainReason) {
         final PrimarySkillType skill = getSkillType(skillType);
-        getPlayer(player).applyXpGain(
+        grantOnlineXP(player,
                 skill,
                 (int) (XP * ExperienceConfig.getInstance().getExperienceGainsMultiplier(skill)),
-                getXPGainReason(xpGainReason), CUSTOM);
+                getXPGainReason(xpGainReason), Mode.RAW);
     }
 
     /**
@@ -302,18 +297,10 @@ public final class ExperienceAPI {
         final PrimarySkillType skill = getSkillType(skillType);
 
         final ExperienceConfig expConf = ExperienceConfig.getInstance();
-        if (isUnshared) {
-            getPlayer(player).beginUnsharedXpGain(
-                    skill, (int) (XP / expConf.getFormulaSkillModifier(
-                            skill) * expConf.getExperienceGainsMultiplier(skill)),
-                    getXPGainReason(xpGainReason), CUSTOM);
-            return;
-        }
-
-        getPlayer(player).applyXpGain(
+        grantOnlineXP(player,
                 skill, (int) (XP / expConf.getFormulaSkillModifier(
                         skill) * expConf.getExperienceGainsMultiplier(skill)),
-                getXPGainReason(xpGainReason), CUSTOM);
+                getXPGainReason(xpGainReason), isUnshared ? Mode.UNSHARED : Mode.RAW);
     }
 
     /**
@@ -387,14 +374,8 @@ public final class ExperienceAPI {
      */
     public static void addXP(Player player, String skillType, int XP, String xpGainReason,
             boolean isUnshared) {
-        if (isUnshared) {
-            getPlayer(player).beginUnsharedXpGain(getSkillType(skillType), XP,
-                    getXPGainReason(xpGainReason), CUSTOM);
-            return;
-        }
-
-        getPlayer(player).beginXpGain(getSkillType(skillType), XP, getXPGainReason(xpGainReason),
-                CUSTOM);
+        grantOnlineXP(player, getSkillType(skillType), XP, getXPGainReason(xpGainReason),
+                isUnshared ? Mode.UNSHARED : Mode.NORMAL);
     }
 
     /**
@@ -1316,10 +1297,23 @@ public final class ExperienceAPI {
      */
     @Deprecated(forRemoval = true)
     private static McMMOPlayer getPlayer(Player player) throws McMMOPlayerNotFoundException {
-        if (!UserManager.hasPlayerDataKey(player)) {
+        McMMOPlayer mmoPlayer = UserManager.getPlayer(player);
+        if (mmoPlayer == null) {
             throw new McMMOPlayerNotFoundException(player);
         }
 
-        return UserManager.getPlayer(player);
+        return mmoPlayer;
+    }
+
+    private static void grantOnlineXP(Player player, PrimarySkillType skill, float xp,
+            XPGainReason reason, Mode mode) {
+        McMMOPlayer mmoPlayer = UserManager.getPlayer(player);
+        if (mmoPlayer != null) {
+            mode.apply(mmoPlayer, skill, xp, reason);
+            return;
+        }
+        if (!mcMMO.p.getPendingExperienceManager().enqueue(player, skill, xp, reason, mode)) {
+            throw new McMMOPlayerNotFoundException(player);
+        }
     }
 }

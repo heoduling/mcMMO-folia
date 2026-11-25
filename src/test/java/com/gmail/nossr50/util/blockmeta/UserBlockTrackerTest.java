@@ -83,20 +83,22 @@ class UserBlockTrackerTest {
     }
 
     @Test
-    void setIneligibleShouldThrowIndexOutOfBoundsException() {
+    void setIneligibleIgnoresInvalidHeightsAndKeepsThemIneligible() {
         when(mockWorld.getMinHeight()).thenReturn(-64);
         final HashChunkManager hashChunkManager = new HashChunkManager();
 
         // Top Block
         int illegalMaxHeight = 256 + 1;
         final Block illegalHeightBlock = initMockBlock(1337, illegalMaxHeight, -1337);
-        Assertions.assertThrows(IndexOutOfBoundsException.class,
+        Assertions.assertDoesNotThrow(
                 () -> hashChunkManager.setIneligible(illegalHeightBlock));
+        assertTrue(hashChunkManager.isIneligible(illegalHeightBlock));
 
         int illegalMinHeight = -65;
         final Block otherIllegalHeightBlock = initMockBlock(1337, illegalMinHeight, -1337);
-        Assertions.assertThrows(IndexOutOfBoundsException.class,
+        Assertions.assertDoesNotThrow(
                 () -> hashChunkManager.setIneligible(otherIllegalHeightBlock));
+        assertTrue(hashChunkManager.isIneligible(otherIllegalHeightBlock));
     }
 
     @Test
@@ -106,7 +108,7 @@ class UserBlockTrackerTest {
         int radius = 2; // Could be anything but drastically changes test time
 
         for (int x = -radius; x <= radius; x++) {
-            for (int y = mockWorld.getMinHeight(); y <= mockWorld.getMaxHeight(); y++) {
+            for (int y = mockWorld.getMinHeight(); y < mockWorld.getMaxHeight(); y++) {
                 for (int z = -radius; z <= radius; z++) {
                     final Block testBlock = initMockBlock(x, y, z);
                     // mark ineligible

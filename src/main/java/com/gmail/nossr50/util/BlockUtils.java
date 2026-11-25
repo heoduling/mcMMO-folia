@@ -102,7 +102,9 @@ public final class BlockUtils {
             block.removeMetadata(MetadataConstants.METADATA_KEY_REPLANT, mcMMO.p);
         }
 
-        mcMMO.getUserBlockTracker().setEligible(block);
+        if (isWithinWorldBounds(block)) {
+            mcMMO.getUserBlockTracker().setEligible(block);
+        }
     }
 
     /**

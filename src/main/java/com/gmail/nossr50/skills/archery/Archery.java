@@ -6,9 +6,6 @@ import com.gmail.nossr50.datatypes.skills.SubSkillType;
 import com.gmail.nossr50.mcMMO;
 import com.gmail.nossr50.util.ItemUtils;
 import com.gmail.nossr50.util.skills.RankUtils;
-import java.util.Map;
-import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 
 import org.bukkit.Material;
 import org.bukkit.entity.LivingEntity;
@@ -17,8 +14,6 @@ import org.bukkit.inventory.ItemStack;
 import org.jetbrains.annotations.NotNull;
 
 public class Archery {
-    private static final Map<UUID, TrackedEntity> trackedEntities = new ConcurrentHashMap<>();
-
     public static double skillShotMaxBonusDamage = mcMMO.p.getAdvancedConfig()
             .getSkillShotDamageMax();
 
@@ -28,21 +23,18 @@ public class Archery {
             .getArcheryDistanceMultiplier();
 
     protected static void incrementTrackerValue(LivingEntity livingEntity) {
-        final TrackedEntity trackedEntity = trackedEntities.computeIfAbsent(
-                livingEntity.getUniqueId(), k -> new TrackedEntity(livingEntity));
-        trackedEntity.incrementArrowCount();
+        TrackedEntity.increment(livingEntity);
     }
 
+    /** @deprecated Entity arrow data is now managed by the hit and death handlers. */
+    @Deprecated
     protected static void removeFromTracker(TrackedEntity trackedEntity) {
-        trackedEntities.remove(trackedEntity.getID());
+        trackedEntity.removeIfCurrent();
     }
 
-    /** Removes tracking for an entity that is being unloaded or destroyed. */
+    /** Removes arrows when this entity's death is excluded from arrow retrieval. */
     public static void removeTrackedEntity(final @NotNull LivingEntity livingEntity) {
-        final TrackedEntity trackedEntity = trackedEntities.remove(livingEntity.getUniqueId());
-        if (trackedEntity != null) {
-            trackedEntity.cancel();
-        }
+        TrackedEntity.remove(livingEntity);
     }
 
     /**
@@ -51,10 +43,10 @@ public class Archery {
      * @param livingEntity The entity hit by the arrows
      */
     public static void arrowRetrievalCheck(@NotNull LivingEntity livingEntity) {
-        final TrackedEntity trackedEntity = trackedEntities.remove(livingEntity.getUniqueId());
-        if (trackedEntity != null) {
+        final int arrowCount = TrackedEntity.take(livingEntity);
+        if (arrowCount > 0) {
             ItemUtils.spawnItems(null, livingEntity.getLocation(),
-                    new ItemStack(Material.ARROW), trackedEntity.getArrowCount(),
+                    new ItemStack(Material.ARROW), arrowCount,
                     ItemSpawnReason.ARROW_RETRIEVAL_ACTIVATED);
         }
     }

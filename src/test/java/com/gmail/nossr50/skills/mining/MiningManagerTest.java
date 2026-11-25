@@ -11,6 +11,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anySet;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.anyInt;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
@@ -33,6 +34,7 @@ import com.gmail.nossr50.datatypes.skills.SubSkillType;
 import com.gmail.nossr50.datatypes.skills.SuperAbilityType;
 import com.gmail.nossr50.mcMMO;
 import com.gmail.nossr50.util.BlockUtils;
+import com.gmail.nossr50.util.EnchantmentMapper;
 import com.gmail.nossr50.util.EventUtils;
 import com.gmail.nossr50.util.ItemUtils;
 import com.gmail.nossr50.util.MetadataConstants;
@@ -53,7 +55,9 @@ import org.bukkit.block.Block;
 import org.bukkit.enchantments.Enchantment;
 import org.bukkit.entity.TNTPrimed;
 import org.bukkit.event.entity.EntityExplodeEvent;
+import org.bukkit.event.player.PlayerItemDamageEvent;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.Damageable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
@@ -163,23 +167,59 @@ class MiningManagerTest extends MMOTestEnvironment {
             }
         }
 
-        @Test
-        void superBreakerShouldWearTheToolDown() {
-            try (final MockedStatic<BlockUtils> ignored = mockStatic(BlockUtils.class);
-                    final MockedStatic<ProbabilityUtil> ignoredRng =
-                            mockStatic(ProbabilityUtil.class);
-                    final MockedStatic<SkillUtils> mockedSkillUtils =
-                            mockStatic(SkillUtils.class)) {
-                // Given - Super Breaker is active with a configured tool damage
-                doReturn(true).when(mmoPlayer).getAbilityMode(SuperAbilityType.SUPER_BREAKER);
-                when(generalConfig.getAbilityToolDamage()).thenReturn(1);
+        @ParameterizedTest
+        @CsvSource({
+                "1, 0, 10, false, 1, 1, false, 11",
+                "4, 3, 10, false, 1, 1, false, 11",
+                "4, 3, 10, false, 1, 2, false, 12",
+                "4, 3, 10, false, 1, 0, false, -1",
+                "4, 3, 10, false, 1, -1, false, -1",
+                "4, 3, 10, false, 1, 1, true, -1",
+                "4, 0, 63, false, 1, 2147483647, false, 64",
+                "4, 0, 64, false, 0, 0, false, -1",
+                "1, 3, 10, false, 0, 0, false, -1",
+                "0, 0, 10, false, 0, 0, false, -1",
+                "4, 0, 10, true, 0, 0, false, -1",
+        })
+        void superBreakerRespectsItemDamageEvent(int configuredLoss, int unbreaking, int damage,
+                boolean unbreakable, int proposedLoss, int eventLoss, boolean cancelled, int finalDamage) {
+            final Damageable meta = mock(Damageable.class);
+            when(heldItem.getItemMeta()).thenReturn(meta);
+            when(heldItem.hasItemMeta()).thenReturn(true);
+            when(meta.isUnbreakable()).thenReturn(unbreakable);
+            when(meta.hasMaxDamage()).thenReturn(true);
+            when(meta.getMaxDamage()).thenReturn(64);
+            when(meta.getDamage()).thenReturn(damage);
+            final EnchantmentMapper mapper = mock(EnchantmentMapper.class);
+            when(mcMMO.p.getEnchantmentMapper()).thenReturn(mapper);
+            when(heldItem.getEnchantmentLevel(mapper.getUnbreaking())).thenReturn(unbreaking);
+            doReturn(true).when(mmoPlayer).getAbilityMode(SuperAbilityType.SUPER_BREAKER);
+            when(generalConfig.getAbilityToolDamage()).thenReturn(configuredLoss);
+            doAnswer(invocation -> {
+                final PlayerItemDamageEvent event = invocation.getArgument(0);
+                assertThat(event.getPlayer()).isSameAs(player);
+                assertThat(event.getItem()).isSameAs(heldItem);
+                assertThat(event.getDamage()).isEqualTo(proposedLoss);
+                event.setDamage(eventLoss);
+                event.setCancelled(cancelled);
+                return null;
+            }).when(pluginManager).callEvent(any(PlayerItemDamageEvent.class));
 
-                // When - the mined block is processed
+            try (final MockedStatic<BlockUtils> drops = mockStatic(BlockUtils.class);
+                    final MockedStatic<ProbabilityUtil> rng = mockStatic(ProbabilityUtil.class)) {
+                rng.when(() -> ProbabilityUtil.isSkillRNGSuccessful(
+                        SubSkillType.MINING_DOUBLE_DROPS, mmoPlayer)).thenReturn(true);
                 miningManager.miningBlockCheck(minedBlock);
-
-                // Then - the pickaxe takes the configured durability hit
-                mockedSkillUtils.verify(
-                        () -> SkillUtils.handleDurabilityChange(heldItem, 1));
+                drops.verify(() -> BlockUtils.markDropsAsBonus(minedBlock, false));
+            }
+            verify(miningManager).applyXpGain(400f, XPGainReason.PVE, XPGainSource.SELF);
+            verify(pluginManager, Mockito.times(proposedLoss > 0 ? 1 : 0))
+                    .callEvent(any(PlayerItemDamageEvent.class));
+            if (finalDamage < 0) {
+                verify(heldItem, never()).setItemMeta(any());
+            } else {
+                verify(meta).setDamage(finalDamage);
+                verify(heldItem).setItemMeta(meta);
             }
         }
 

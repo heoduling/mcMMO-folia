@@ -7,29 +7,28 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
-import static org.mockito.Mockito.mockConstruction;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.gmail.nossr50.MMOTestEnvironment;
 import com.gmail.nossr50.api.ItemSpawnReason;
 import com.gmail.nossr50.config.experience.ExperienceConfig;
 import com.gmail.nossr50.datatypes.skills.SubSkillType;
-import com.gmail.nossr50.mcMMO;
 import com.gmail.nossr50.util.ItemUtils;
 import com.gmail.nossr50.util.skills.RankUtils;
-import com.tcoded.folialib.FoliaLib;
-import com.tcoded.folialib.impl.PlatformScheduler;
-import com.tcoded.folialib.wrapper.task.WrappedTask;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.UUID;
 import java.util.logging.Logger;
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.NamespacedKey;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.persistence.PersistentDataContainer;
+import org.bukkit.persistence.PersistentDataType;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
@@ -55,41 +54,46 @@ class ArcheryTest extends MMOTestEnvironment {
         // freezes the distance multiplier from the config at class load
         when(ExperienceConfig.getInstance().getArcheryDistanceMultiplier()).thenReturn(0.025);
 
-        final FoliaLib foliaLib = mock(FoliaLib.class);
-        when(mcMMO.p.getFoliaLib()).thenReturn(foliaLib);
-        when(foliaLib.getScheduler()).thenReturn(mock(PlatformScheduler.class));
-
         originalSkillShotMaxBonus = Archery.skillShotMaxBonusDamage;
         originalDazeBonusDamage = Archery.dazeBonusDamage;
         Archery.skillShotMaxBonusDamage = 9.0;
         Archery.dazeBonusDamage = 4.0;
+        TrackedEntity.startTracking();
     }
 
     @AfterEach
     void tearDown() {
+        TrackedEntity.clearTracking();
         Archery.skillShotMaxBonusDamage = originalSkillShotMaxBonus;
         Archery.dazeBonusDamage = originalDazeBonusDamage;
         cleanUpStaticMocks();
     }
 
     private LivingEntity mockTrackedTarget() {
+        return mockTrackedTarget(UUID.randomUUID(), new Location(world, 0, 64, 0), new HashMap<>());
+    }
+
+    static LivingEntity mockTrackedTarget(UUID id, Location location, Map<NamespacedKey, long[]> savedData) {
         final LivingEntity target = mock(LivingEntity.class);
-        when(target.getUniqueId()).thenReturn(UUID.randomUUID());
-        when(target.getLocation()).thenReturn(new Location(world, 0, 64, 0));
-        when(target.isValid()).thenReturn(true);
+        final PersistentDataContainer data = mock(PersistentDataContainer.class);
+        when(target.getUniqueId()).thenReturn(id);
+        when(target.getLocation()).thenReturn(location);
+        when(target.getPersistentDataContainer()).thenReturn(data);
+        when(data.get(any(NamespacedKey.class), eq(PersistentDataType.LONG_ARRAY)))
+                .thenAnswer(call -> savedData.get(call.getArgument(0)));
+        doAnswer(call -> savedData.put(call.getArgument(0), call.getArgument(2)))
+                .when(data).set(any(NamespacedKey.class), eq(PersistentDataType.LONG_ARRAY), any(long[].class));
+        doAnswer(call -> savedData.remove(call.getArgument(0))).when(data).remove(any(NamespacedKey.class));
         return target;
     }
 
     @Test
-    void removalCancelsTrackerAndPreventsArrowRetrieval() {
+    void removalPreventsArrowRetrieval() {
         final LivingEntity target = mockTrackedTarget();
-        try (var trackers = mockConstruction(TrackedEntity.class);
-             var items = mockStatic(ItemUtils.class)) {
+        try (var items = mockStatic(ItemUtils.class)) {
             Archery.incrementTrackerValue(target);
-            final TrackedEntity tracker = trackers.constructed().get(0);
             Archery.removeTrackedEntity(target);
             Archery.removeTrackedEntity(target);
-            verify(tracker).cancel();
             Archery.arrowRetrievalCheck(target);
             items.verifyNoInteractions();
         }
@@ -190,44 +194,33 @@ class ArcheryTest extends MMOTestEnvironment {
         }
 
         @Test
-        void cleanupTaskShouldDropInvalidEntitiesAndCancelItself() {
-            // Given - a tracked entity that has since become invalid (despawned or dead)
-            final LivingEntity target = mockTrackedTarget();
-            Archery.incrementTrackerValue(target);
-            when(target.isValid()).thenReturn(false);
-            final TrackedEntity cleanupTracker = new TrackedEntity(target);
-            final WrappedTask wrappedTask = mock(WrappedTask.class);
-
-            // When - the periodic cleanup runs
-            cleanupTracker.accept(wrappedTask);
-
-            // Then - the timer cancels itself and the entity is no longer tracked
-            verify(wrappedTask).cancel();
+        void reloadedEntityRetrievesItsSavedArrowsAndNewArrowsOnce() {
+            final UUID id = UUID.randomUUID();
+            final Location location = new Location(world, 0, 64, 0);
+            final Map<NamespacedKey, long[]> data = new HashMap<>();
+            Archery.incrementTrackerValue(mockTrackedTarget(id, location, data));
+            final LivingEntity reloaded = mockTrackedTarget(id, location, new HashMap<>(data));
+            Archery.incrementTrackerValue(reloaded);
             try (final MockedStatic<ItemUtils> mockedItemUtils = mockStatic(ItemUtils.class)) {
-                Archery.arrowRetrievalCheck(target);
-                mockedItemUtils.verifyNoInteractions();
+                Archery.arrowRetrievalCheck(reloaded);
+                Archery.arrowRetrievalCheck(reloaded);
+                mockedItemUtils.verify(() -> ItemUtils.spawnItems(isNull(),
+                        eq(location), any(ItemStack.class), eq(2),
+                        eq(ItemSpawnReason.ARROW_RETRIEVAL_ACTIVATED)));
+                mockedItemUtils.verifyNoMoreInteractions();
             }
         }
 
         @Test
-        void cleanupTaskShouldKeepValidEntitiesTracked() {
-            // Given - a tracked entity that is still alive
+        void stoppingInvalidatesPreviouslyTrackedArrows() {
             final LivingEntity target = mockTrackedTarget();
-            final Location targetLocation = target.getLocation();
             Archery.incrementTrackerValue(target);
-            final TrackedEntity cleanupTracker = new TrackedEntity(target);
-            final WrappedTask wrappedTask = mock(WrappedTask.class);
-
-            // When - the periodic cleanup runs
-            cleanupTracker.accept(wrappedTask);
-
-            // Then - the timer keeps running and the arrows still pay out
-            verify(wrappedTask, never()).cancel();
+            TrackedEntity.clearTracking();
+            Archery.incrementTrackerValue(target);
+            TrackedEntity.startTracking();
             try (final MockedStatic<ItemUtils> mockedItemUtils = mockStatic(ItemUtils.class)) {
                 Archery.arrowRetrievalCheck(target);
-                mockedItemUtils.verify(() -> ItemUtils.spawnItems(isNull(),
-                        eq(targetLocation), any(ItemStack.class), eq(1),
-                        eq(ItemSpawnReason.ARROW_RETRIEVAL_ACTIVATED)));
+                mockedItemUtils.verifyNoInteractions();
             }
         }
     }

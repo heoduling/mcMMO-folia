@@ -38,7 +38,17 @@ public class McTopCommandAsyncTask extends CancellableRunnable {
         final List<PlayerStat> userStats = mcMMO.getDatabaseManager()
                 .readLeaderboard(skill, page, 10);
 
-        mcMMO.p.getFoliaLib().getScheduler().runNextTick(
-                new MctopCommandDisplayTask(userStats, page, skill, sender, useBoard, useChat));
+        final MctopCommandDisplayTask display = new MctopCommandDisplayTask(
+                userStats, page, skill, sender, useBoard, useChat);
+        final var scheduler = mcMMO.p.getFoliaLib().getScheduler();
+        if (sender instanceof Player player) {
+            scheduler.runAtEntity(player, task -> {
+                if (player.isOnline()) {
+                    display.run();
+                }
+            });
+        } else {
+            scheduler.runNextTick(display);
+        }
     }
 }

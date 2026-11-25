@@ -34,6 +34,7 @@ import com.gmail.nossr50.util.experience.FormulaManager;
 import com.gmail.nossr50.util.platform.MinecraftGameVersion;
 import com.gmail.nossr50.util.player.NotificationManager;
 import com.gmail.nossr50.util.player.UserManager;
+import com.gmail.nossr50.util.player.PendingExperienceManager;
 import com.gmail.nossr50.util.skills.RankUtils;
 import com.gmail.nossr50.util.skills.SkillTools;
 import com.gmail.nossr50.util.sounds.SoundManager;
@@ -109,6 +110,7 @@ public abstract class MMOTestEnvironment {
     protected void mockBaseEnvironment(Logger logger) throws InvalidSkillException {
         mockedMcMMO = mockStatic(mcMMO.class);
         mcMMO.p = mock(mcMMO.class);
+        when(mcMMO.p.getPendingBlockChanges()).thenReturn(new com.gmail.nossr50.util.blockmeta.PendingBlockChanges());
         when(mcMMO.p.getLogger()).thenReturn(logger);
         try {
             testDataFolder = java.nio.file.Files.createTempDirectory("mcmmo-test-data-").toFile();
@@ -116,6 +118,12 @@ public abstract class MMOTestEnvironment {
             throw new RuntimeException("Failed to create temp test data folder", e);
         }
         when(mcMMO.p.getDataFolder()).thenReturn(testDataFolder);
+        try {
+            when(mcMMO.p.getPendingExperienceManager()).thenReturn(
+                    new PendingExperienceManager(testDataFolder.toPath(), logger));
+        } catch (IOException exception) {
+            throw new RuntimeException(exception);
+        }
         // Keep locale file creation inside the temp folder instead of the working directory
         when(mcMMO.getLocalesDirectory()).thenReturn(testDataFolder.getPath() + File.separator);
 
